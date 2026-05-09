@@ -80,6 +80,7 @@ const EmailDetailModal = ({ isOpen, emailId, onClose, getDetails, onAction }) =>
                 <div className="flex gap-2">
                   <ActionButton icon={<Archive className="w-5 h-5" />} label="Archive" onClick={() => onAction('archive', emailId)} />
                   <ActionButton icon={<Trash2 className="w-5 h-5" />} label="Delete" onClick={() => onAction('delete', emailId)} color="text-rose-400" />
+                  <ActionButton icon={<Shield className="w-5 h-5" />} label="Mark Spam" onClick={() => onAction('spam', emailId)} color="text-amber-400" />
                   <ActionButton 
                     icon={details?.isUnread ? <Mail className="w-5 h-5" /> : <MailOpen className="w-5 h-5" />} 
                     label={details?.isUnread ? "Mark as Read" : "Mark as Unread"} 

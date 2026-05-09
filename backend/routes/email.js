@@ -14,7 +14,7 @@ router.get('/unread', async (req, res) => {
         const response = await gmail.users.messages.list({
             userId: 'me',
             q: 'is:unread in:inbox',
-            maxResults: 15
+            maxResults: 50
         });
 
         const messages = response.data.messages || [];
@@ -170,6 +170,29 @@ router.post('/toggle-read', async (req, res) => {
     } catch (error) {
         console.error('Error toggling read status', error);
         res.status(500).json({ error: 'Failed to toggle read status' });
+    }
+});
+
+router.post('/mark-spam', async (req, res) => {
+    const { emailId } = req.body;
+
+    try {
+        const auth = req.oauth2Client;
+        const gmail = google.gmail({ version: 'v1', auth });
+
+        await gmail.users.messages.modify({
+            userId: 'me',
+            id: emailId,
+            requestBody: {
+                addLabelIds: ['SPAM'],
+                removeLabelIds: ['INBOX']
+            }
+        });
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error marking email as spam', error);
+        res.status(500).json({ error: 'Failed to mark email as spam' });
     }
 });
 

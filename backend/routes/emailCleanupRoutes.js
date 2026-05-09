@@ -38,6 +38,8 @@ const cleanupRateLimiter = (req, res, next) => {
     let requestedCount = 0;
     if (req.path === '/bulk/remove') {
         requestedCount = req.body.messageIds?.length || 0;
+    } else if (req.path === '/scan-spam') {
+        requestedCount = 1; // Scan operation counts as 1 to allow multiple scans
     } else {
         // For clean and empty, assume bulk could hit limit, enforce safely
         requestedCount = 50; 
@@ -115,6 +117,50 @@ router.get('/social', async (req, res) => {
     res.json(results);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch social emails', details: error.message });
+  }
+});
+
+// GET /api/emails/trash - fetch trashed emails (cleanup history)
+router.get('/trash', async (req, res) => {
+  try {
+    const { maxResults, pageToken } = req.query;
+    const results = await req.cleanupService.getTrash(
+      maxResults ? parseInt(maxResults) : 50,
+      pageToken
+    );
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch trashed emails', details: error.message });
+  }
+});
+
+// GET /api/emails/inbox - fetch general inbox emails
+router.get('/inbox', async (req, res) => {
+  try {
+    const { maxResults, pageToken, unreadOnly } = req.query;
+    const isUnreadOnly = unreadOnly === 'true';
+    const results = await req.cleanupService.getInbox(
+      maxResults ? parseInt(maxResults) : 50,
+      pageToken,
+      isUnreadOnly
+    );
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch inbox emails', details: error.message });
+  }
+});
+
+// GET /api/emails/all - fetch all emails
+router.get('/all', async (req, res) => {
+  try {
+    const { maxResults, pageToken } = req.query;
+    const results = await req.cleanupService.getAllMail(
+      maxResults ? parseInt(maxResults) : 50,
+      pageToken
+    );
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch all emails', details: error.message });
   }
 });
 
@@ -237,6 +283,23 @@ router.post('/auto-cleanup', cleanupRateLimiter, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to run auto-cleanup', details: error.message });
+  }
+});
+
+// POST /api/emails/scan-spam - scan inbox for spam using AI
+router.post('/scan-spam', async (req, res) => {
+  try {
+    const { maxToScan } = req.body;
+    const results = await req.cleanupService.scanInboxForSpam(maxToScan ? parseInt(maxToScan) : 50);
+    
+    auditLog('SCAN_SPAM', results.totalScanned, req.userToken);
+    
+    res.json({ 
+      message: `Successfully scanned ${results.totalScanned} emails. Detected ${results.spamDetected} spam messages.`, 
+      ...results 
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to scan for spam', details: error.message });
   }
 });
 

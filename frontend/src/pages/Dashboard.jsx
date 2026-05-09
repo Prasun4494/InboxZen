@@ -17,7 +17,10 @@ import { Calendar as CalendarIcon } from 'lucide-react';
 export default function Dashboard() {
   const navigate = useNavigate();
   const [emails, setEmails] = useState([]);
+  const [nextPageToken, setNextPageToken] = useState(null);
+  const [fetchingMode, setFetchingMode] = useState('unread'); // 'unread' or 'all'
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
   const [processingId, setProcessingId] = useState(null);
   const [editedReplies, setEditedReplies] = useState({});
 
@@ -48,7 +51,7 @@ export default function Dashboard() {
     }
     fetchEmails();
     fetchUserInfo();
-  }, [token, navigate]);
+  }, [token, navigate, fetchingMode]);
 
   const fetchUserInfo = async () => {
     try {
@@ -61,27 +64,35 @@ export default function Dashboard() {
     }
   };
 
-  const fetchEmails = async () => {
-    setLoading(true);
+  const fetchEmails = async (isLoadMore = false) => {
+    if (!isLoadMore) setLoading(true);
     try {
-      const res = await axios.get('http://localhost:3000/api/emails/unread', {
+      const endpoint = fetchingMode === 'unread' ? '/api/emails/unread' : '/api/emails/all';
+      const url = `http://localhost:3000${endpoint}?maxResults=50${isLoadMore && nextPageToken ? `&pageToken=${nextPageToken}` : ''}`;
+      
+      const res = await axios.get(url, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      setEmails(res.data);
+      
+      const newEmails = Array.isArray(res.data) ? res.data : (res.data.messages || []);
+      const tokenFromServer = res.data.nextPageToken || null;
+
+      setEmails(prev => isLoadMore ? [...prev, ...newEmails] : newEmails);
+      setNextPageToken(tokenFromServer);
     } catch (err) {
       console.error(err);
       if (err.response?.status === 401) {
         localStorage.removeItem('gmail_token');
         navigate('/');
       } else {
-        setEmails([
-          { id: '1', threadId: 't1', subject: 'Emergency: Server Outage', from: 'devops@company.com', snippet: 'The production node is down and returning 502 Bad Gateway to all clients since 10 minutes ago...', priority: 'high', category: 'urgent_reply', suggested_action: 'auto_reply', confidence_score: 98, summary: 'Highly critical failure affecting production', autoReply: 'I have received your email. I am logging on immediately. [ACTION_NEEDED]' },
-          { id: '2', threadId: 't2', subject: 'Password Reset Request', from: 'support@service.com', snippet: 'Click here to reset your password and access your confidential account...', priority: 'high', category: 'urgent_reply', suggested_action: 'human_reply', confidence_score: 95, summary: 'Safety feature blocked auto-reply due to sensitive context.', autoReply: null },
-          { id: '3', threadId: 't3', subject: 'Buy our new software!', from: 'sales@spam.com', snippet: 'Huge discount on our new enterprise software package...', priority: 'low', category: 'spam', suggested_action: 'archive', confidence_score: 95, summary: 'Marketing terminology and discount offer present.', autoReply: null },
-          { id: '4', threadId: 't4', subject: 'SEO ranking scam', from: 'seo@spam.com', snippet: 'We guarantee page 1 on Google for your website...', priority: 'low', category: 'spam', suggested_action: 'archive', confidence_score: 99, summary: 'Unsolicited SEO marketing.', autoReply: null },
-          { id: '5', threadId: 't5', subject: 'Can you review this pull request?', from: 'colleague@company.com', snippet: 'I finished the dashboard feature, please review when you have time...', priority: 'medium', category: 'delegate', suggested_action: 'human_reply', confidence_score: 90, summary: 'Code review request from a team member.', autoReply: null },
-          { id: '6', threadId: 't6', subject: 'Team Sync up', from: 'manager@company.com', snippet: 'Let us meet tomorrow at 10 AM to discuss Q3 goals...', priority: 'medium', category: 'meeting_request', suggested_action: 'human_reply', confidence_score: 92, summary: 'Scheduling request from a manager regarding quarterly goals.', autoReply: null },
-        ]);
+        // Fallback for demo/dev
+        if (!isLoadMore) {
+          setEmails([
+            { id: '1', threadId: 't1', subject: 'Emergency: Server Outage', from: 'devops@company.com', snippet: 'The production node is down and returning 502 Bad Gateway to all clients since 10 minutes ago...', priority: 'high', category: 'urgent_reply', suggested_action: 'auto_reply', confidence_score: 98, summary: 'Highly critical failure affecting production', autoReply: 'I have received your email. I am logging on immediately. [ACTION_NEEDED]' },
+            { id: '2', threadId: 't2', subject: 'Password Reset Request', from: 'support@service.com', snippet: 'Click here to reset your password and access your confidential account...', priority: 'high', category: 'urgent_reply', suggested_action: 'human_reply', confidence_score: 95, summary: 'Safety feature blocked auto-reply due to sensitive context.', autoReply: null },
+            { id: '3', threadId: 't3', subject: 'Buy our new software!', from: 'sales@spam.com', snippet: 'Huge discount on our new enterprise software package...', priority: 'low', category: 'spam', suggested_action: 'archive', confidence_score: 95, summary: 'Marketing terminology and discount offer present.', autoReply: null },
+          ]);
+        }
       }
     } finally {
       setLoading(false);
@@ -263,16 +274,21 @@ export default function Dashboard() {
   };
 
   // KPI Calculations
-  const processedToday = emails.length + replyLogs.length; // Assuming initial list + processed logs
-  const suggestedCount = emails.filter(e => e.suggested_action === 'auto_reply').length;
-  const sentCount = replyLogs.length;
-  const timeSavedMins = (replyLogs.length * 5) + ((emails.length + replyLogs.length) * 1); // 5m per auto reply, 1m per triage
+  const safeEmails = Array.isArray(emails) ? emails.filter(Boolean) : [];
+  const processedToday = safeEmails.length + replyLogs.length; 
+  const suggestedCount = safeEmails.filter(e => e?.suggested_action === 'auto_reply').length;
+  const sentCount = Array.isArray(replyLogs) ? replyLogs.length : 0;
+  const timeSavedMins = (sentCount * 5) + ((safeEmails.length + sentCount) * 1); 
 
   const categoryData = Object.entries(
-    emails.reduce((acc, e) => { acc[e.category] = (acc[e.category] || 0) + 1; return acc; }, {})
+    safeEmails.reduce((acc, e) => { 
+      const cat = e?.category || 'other';
+      acc[cat] = (acc[cat] || 0) + 1; 
+      return acc; 
+    }, {})
   ).map(([name, value]) => ({ name, value }));
 
-  const activeEmails = selectedCategory ? emails.filter(e => e.category === selectedCategory) : emails;
+  const activeEmails = selectedCategory ? safeEmails.filter(e => e?.category === selectedCategory) : safeEmails;
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex overflow-hidden">
@@ -455,19 +471,35 @@ export default function Dashboard() {
                       ))}
                     </Pie>
                     <RechartsTooltip contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px' }} itemStyle={{ color: '#f8fafc' }} />
-                    <Legend formatter={(value) => <span className="text-slate-300 cursor-pointer text-xs" onClick={() => setSelectedCategory(selectedCategory === value ? null : value)}>{value.replace('_', ' ')}</span>} />
+                    <Legend formatter={(value) => <span className="text-slate-300 cursor-pointer text-xs" onClick={() => setSelectedCategory(selectedCategory === value ? null : value)}>{(value || 'other').replace('_', ' ')}</span>} />
                   </PieChart>
                 </ResponsiveContainer>
                 <p className="text-xs text-center text-slate-500 mt-2">Click chart slices to filter list.</p>
               </div>
 
               {/* Email List View */}
-              <div className="glass-panel p-0 lg:col-span-2 overflow-hidden flex flex-col h-[400px]">
+              <div className="glass-panel p-0 lg:col-span-2 overflow-hidden flex flex-col h-[500px]">
                 <div className="p-4 border-b border-slate-700/50 flex justify-between items-center bg-slate-800/50">
-                  <h3 className="font-semibold text-white">
-                    {selectedCategory ? `Viewing ${selectedCategory.replace('_', ' ')}` : 'All Unread Emails'}
-                    <span className="ml-2 text-xs bg-slate-700 px-2 py-0.5 rounded-full">{activeEmails.length}</span>
-                  </h3>
+                  <div className="flex items-center gap-4">
+                    <h3 className="font-semibold text-white">
+                      {selectedCategory ? `Viewing ${(selectedCategory || 'other').replace('_', ' ')}` : fetchingMode === 'unread' ? 'Unread Emails' : 'All Emails'}
+                      <span className="ml-2 text-xs bg-slate-700 px-2 py-0.5 rounded-full">{activeEmails.length}</span>
+                    </h3>
+                    <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-700">
+                      <button 
+                        onClick={() => setFetchingMode('unread')}
+                        className={clsx("px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all", fetchingMode === 'unread' ? "bg-indigo-600 text-white" : "text-slate-500 hover:text-slate-300")}
+                      >
+                        Unread
+                      </button>
+                      <button 
+                        onClick={() => setFetchingMode('all')}
+                        className={clsx("px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all", fetchingMode === 'all' ? "bg-indigo-600 text-white" : "text-slate-500 hover:text-slate-300")}
+                      >
+                        All
+                      </button>
+                    </div>
+                  </div>
                   {selectedCategory && <button onClick={() => setSelectedCategory(null)} className="text-xs text-indigo-400 hover:underline">Clear Filter</button>}
                 </div>
                 <div className="flex-1 overflow-y-auto w-full">
@@ -475,14 +507,16 @@ export default function Dashboard() {
                     <div className="h-full flex items-center justify-center text-slate-500">No emails match this filter.</div>
                   ) : (
                     <div className="flex flex-col divide-y divide-slate-700/40">
-                      {activeEmails.map(email => (
-                        <div key={email.id} onClick={() => handleEmailClick(email)} className="p-4 hover:bg-slate-800/40 transition-colors flex flex-col gap-2 group cursor-pointer">
+                      {activeEmails.map(email => {
+                        if (!email) return null;
+                        return (
+                          <div key={email.id} onClick={() => handleEmailClick(email)} className="p-4 hover:bg-slate-800/40 transition-colors flex flex-col gap-2 group cursor-pointer">
                           <div className="flex justify-between items-start gap-4">
                             <div className="flex flex-col flex-1 min-w-0">
                               <span className="text-xs text-slate-400 truncate mb-1">{email.from}</span>
-                              <h4 className="text-sm font-semibold text-white leading-tight truncate group-hover:text-indigo-300 transition-colors">{email.subject}</h4>
-                              <span className={clsx("w-max px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider mt-2", getCategoryTheme(email.category))}>
-                                {email.category.replace('_', ' ')} • {email.confidence_score}% CONF
+                              <h4 className="text-sm font-semibold text-white leading-tight truncate group-hover:text-indigo-300 transition-colors">{email.subject || '(No Subject)'}</h4>
+                              <span className={clsx("w-max px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider mt-2", getCategoryTheme(email.category || 'other'))}>
+                                {(email.category || 'other').toString().replace('_', ' ')} {email.confidence_score ? `• ${email.confidence_score}% CONF` : ''}
                               </span>
                             </div>
                             <button onClick={(e) => { e.stopPropagation(); handleDismiss(email.id); }} className="opacity-0 group-hover:opacity-100 p-2 text-slate-400 hover:text-white transition-all bg-slate-800 rounded-lg hover:bg-slate-700" title="Remove from Triage">
@@ -506,8 +540,22 @@ export default function Dashboard() {
                                {email.category === 'read_later' && <button onClick={(e) => { e.stopPropagation(); handleSaveAsNote(email); }} className="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded font-semibold shrink-0">Save as Note</button>}
                             </div>
                           )}
+                          </div>
+                        );
+                      })}
+                      
+                      {nextPageToken && (
+                        <div className="p-4 flex justify-center border-t border-slate-700/30">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); fetchEmails(true); }}
+                            disabled={loading}
+                            className="flex items-center gap-2 px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700 transition-all"
+                          >
+                            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                            Load More
+                          </button>
                         </div>
-                      ))}
+                      )}
                     </div>
                   )}
                 </div>

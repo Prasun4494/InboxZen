@@ -12,7 +12,7 @@ import CleanupSettings from './CleanupSettings';
 import UndoToast from './UndoToast';
 import BulkDeletePreview from './BulkDeletePreview';
 
-const API_BASE = 'http://localhost:3000/api/emails';
+const API_BASE = '/api/emails';
 
 const Toast = ({ message, type, onClose }) => {
   return (
@@ -83,7 +83,8 @@ const ConfirmModal = ({ isOpen, title, message, onConfirm, onCancel, confirmText
 };
 
 const CleanupDashboard = () => {
-  const [emails, setEmails] = useState({ promotions: [], spam: [], social: [] });
+  const [emails, setEmails] = useState({ inbox: [], promotions: [], spam: [], social: [], trash: [], all: [] });
+  const [pageTokens, setPageTokens] = useState({ inbox: null, promotions: null, spam: null, social: null, trash: null, all: null });
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -91,7 +92,7 @@ const CleanupDashboard = () => {
   // Filters
   const [filterSender, setFilterSender] = useState('');
   const [filterUnsub, setFilterUnsub] = useState(false);
-  const [activeTab, setActiveTab] = useState('promotions');
+  const [activeTab, setActiveTab] = useState('inbox');
 
   // UI State
   const [toasts, setToasts] = useState([]);
@@ -113,33 +114,38 @@ const CleanupDashboard = () => {
     }, 4000);
   }, []);
 
-  const fetchEmails = useCallback(async () => {
+  const fetchEmails = useCallback(async (isLoadMore = false) => {
     if (!token) return;
-    setLoading(true);
+    if (!isLoadMore) setLoading(true);
+    
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [promoRes, spamRes, socialRes] = await Promise.all([
-        fetch(`${API_BASE}/promotions?maxResults=50`, { headers }),
-        fetch(`${API_BASE}/spam?maxResults=50`, { headers }),
-        fetch(`${API_BASE}/social?maxResults=50`, { headers })
-      ]);
+      const currentToken = isLoadMore ? pageTokens[activeTab] : null;
       
-      const promoData = promoRes.ok ? await promoRes.json() : { messages: [] };
-      const spamData = spamRes.ok ? await spamRes.json() : { messages: [] };
-      const socialData = socialRes.ok ? await socialRes.json() : { messages: [] };
+      const res = await fetch(`${API_BASE}/${activeTab}?maxResults=50${currentToken ? `&pageToken=${currentToken}` : ''}`, { headers });
       
-      setEmails({
-        promotions: (promoData.messages || []).map(e => ({ ...e, category: 'promotions' })),
-        spam: (spamData.messages || []).map(e => ({ ...e, category: 'spam' })),
-        social: (socialData.messages || []).map(e => ({ ...e, category: 'social' }))
-      });
-      setSelectedIds(new Set());
+      if (!res.ok) throw new Error(`Failed to fetch ${activeTab}`);
+      const data = await res.json();
+      
+      const newMessages = (data.messages || []).map(e => ({ ...e, category: activeTab }));
+      
+      setEmails(prev => ({
+        ...prev,
+        [activeTab]: isLoadMore ? [...prev[activeTab], ...newMessages] : newMessages
+      }));
+      
+      setPageTokens(prev => ({
+        ...prev,
+        [activeTab]: data.nextPageToken || null
+      }));
+
+      if (!isLoadMore) setSelectedIds(new Set());
     } catch (err) {
-      showToast('Failed to fetch emails', 'error');
+      showToast(err.message || 'Failed to fetch emails', 'error');
     } finally {
       setLoading(false);
     }
-  }, [showToast, token]);
+  }, [showToast, token, activeTab, pageTokens]);
 
   const fetchSettingsStatus = useCallback(async () => {
     if (!token) return;
@@ -154,8 +160,11 @@ const CleanupDashboard = () => {
 
   useEffect(() => {
     fetchEmails();
+  }, [activeTab, token]); // Refetch when tab changes
+
+  useEffect(() => {
     fetchSettingsStatus();
-  }, [fetchEmails, fetchSettingsStatus]);
+  }, [fetchSettingsStatus]);
 
   // Derived state
   const currentList = useMemo(() => emails[activeTab] || [], [emails, activeTab]);
@@ -172,8 +181,9 @@ const CleanupDashboard = () => {
     const totalPromos = emails.promotions.length;
     const totalSpam = emails.spam.length;
     const totalSocial = emails.social.length;
+    const totalInbox = emails.inbox.length;
     const estimatedMbSaved = ((totalPromos + totalSpam + totalSocial) * 50 / 1024).toFixed(1);
-    return { totalPromos, totalSpam, totalSocial, estimatedMbSaved };
+    return { totalPromos, totalSpam, totalSocial, totalInbox, estimatedMbSaved };
   }, [emails]);
 
   const toggleSelection = (id) => {
@@ -355,6 +365,34 @@ const CleanupDashboard = () => {
     }
   };
 
+  const handleScanSpam = async (maxToScan = 50) => {
+    console.log('[CleanupDashboard] Starting spam scan, maxToScan:', maxToScan);
+    setModalConfig(null);
+    showToast(`Starting AI scan of last ${maxToScan} emails...`, 'success');
+    setActionLoading(true);
+    
+    try {
+      const res = await fetch(`${API_BASE}/scan-spam`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ maxToScan })
+      });
+      console.log('[CleanupDashboard] Scan response status:', res.status);
+      const data = await res.json();
+      
+      if (!res.ok) throw new Error(data.error || 'Failed to scan for spam');
+      
+      console.log('[CleanupDashboard] Scan completed:', data);
+      showToast(data.message, 'success');
+      await fetchEmails();
+    } catch (err) {
+      console.error('[CleanupDashboard] Scan error:', err);
+      showToast(err.message, 'error');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const formatDate = (dateString) => {
     return new Date(dateString).toLocaleDateString(undefined, { 
       month: 'short', day: 'numeric', year: 'numeric' 
@@ -478,6 +516,20 @@ const CleanupDashboard = () => {
         >
           <Trash2 className="w-5 h-5" /> Empty Spam
         </button>
+
+        <button 
+          onClick={() => setModalConfig({
+            title: 'AI Spam Scanner',
+            message: 'This will use AI to scan your last 50 inbox messages for potential spam and move them to the spam folder.',
+            confirmText: 'Start Scan',
+            isDanger: false,
+            onConfirm: () => handleScanSpam(50)
+          })}
+          disabled={actionLoading}
+          className="flex-1 min-w-[180px] flex items-center justify-center gap-2 py-3 px-4 bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 font-semibold rounded-xl transition-colors disabled:opacity-50 border border-emerald-500/30"
+        >
+          <ShieldAlert className="w-5 h-5 text-emerald-400" /> AI Spam Scan
+        </button>
         
         <button 
           onClick={() => setShowSettings(true)}
@@ -493,24 +545,42 @@ const CleanupDashboard = () => {
         
         {/* Filters & Tabs */}
         <div className="p-4 border-b border-slate-700/50 flex flex-col sm:flex-row gap-4 items-center justify-between bg-slate-800/30">
-          <div className="flex bg-slate-900/50 p-1 rounded-xl w-full sm:w-auto border border-slate-700/50">
+          <div className="flex bg-slate-900/50 p-1 rounded-xl w-full sm:w-auto border border-slate-700/50 overflow-x-auto no-scrollbar">
+            <button 
+              onClick={() => setActiveTab('inbox')}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'inbox' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              Inbox
+            </button>
             <button 
               onClick={() => setActiveTab('promotions')}
-              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'promotions' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'promotions' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
             >
               Promotions
             </button>
             <button 
               onClick={() => setActiveTab('spam')}
-              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'spam' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'spam' ? 'bg-rose-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
             >
               Spam
             </button>
             <button 
               onClick={() => setActiveTab('social')}
-              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'social' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'social' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
             >
               Social
+            </button>
+            <button 
+              onClick={() => setActiveTab('all')}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'all' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              All Mail
+            </button>
+            <button 
+              onClick={() => setActiveTab('trash')}
+              className={`flex-1 sm:flex-none px-6 py-2.5 rounded-lg font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'trash' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              History
             </button>
           </div>
 
@@ -583,70 +653,89 @@ const CleanupDashboard = () => {
               <p className="text-sm mt-1 text-slate-500">No emails match your current view.</p>
             </div>
           ) : (
-            <ul className="divide-y divide-slate-700/50">
-              <AnimatePresence>
-                {filteredList.map((email) => {
-                  const isSelected = selectedIds.has(email.id);
-                  return (
-                    <motion.li 
-                      layout
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      key={email.id}
-                      onClick={() => toggleSelection(email.id)}
-                      className={`group flex items-start gap-4 p-4 sm:px-6 hover:bg-slate-800/60 cursor-pointer transition-colors ${
-                        isSelected ? 'bg-indigo-900/20' : ''
-                      }`}
-                    >
-                      <div className="pt-2">
-                        {isSelected ? (
-                          <CheckSquare className="w-5 h-5 text-indigo-500" />
-                        ) : (
-                          <Square className="w-5 h-5 text-slate-600 group-hover:text-slate-400 transition-colors" />
-                        )}
-                      </div>
-                      
-                      <div className="flex-shrink-0 pt-1">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shadow-sm ${
-                          activeTab === 'promotions' 
-                            ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' 
-                            : activeTab === 'social'
-                            ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                        }`}>
-                          {getInitials(email.from)}
+            <>
+              <ul className="divide-y divide-slate-700/50">
+                <AnimatePresence>
+                  {filteredList.map((email) => {
+                    const isSelected = selectedIds.has(email.id);
+                    return (
+                      <motion.li 
+                        layout
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        key={email.id}
+                        onClick={() => toggleSelection(email.id)}
+                        className={`group flex items-start gap-4 p-4 sm:px-6 hover:bg-slate-800/60 cursor-pointer transition-colors ${
+                          isSelected ? 'bg-indigo-900/20' : ''
+                        }`}
+                      >
+                        <div className="pt-2">
+                          {isSelected ? (
+                            <CheckSquare className="w-5 h-5 text-indigo-500" />
+                          ) : (
+                            <Square className="w-5 h-5 text-slate-600 group-hover:text-slate-400 transition-colors" />
+                          )}
                         </div>
-                      </div>
-
-                      <div className="flex-1 min-w-0 py-1">
-                        <div className="flex items-center justify-between gap-4 mb-1">
-                          <p className="text-sm font-bold text-white truncate group-hover:text-indigo-300 transition-colors">
-                            {email.from?.split('<')[0].replace(/['"]/g, '').trim()}
-                          </p>
-                          <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
-                            {formatDate(email.date)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
-                            activeTab === 'promotions' ? 'bg-indigo-500/20 text-indigo-300' : activeTab === 'social' ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-500/20 text-slate-300'
+                        
+                        <div className="flex-shrink-0 pt-1">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shadow-sm ${
+                            activeTab === 'promotions' 
+                              ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' 
+                              : activeTab === 'social'
+                              ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                              : activeTab === 'spam'
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                           }`}>
-                            {activeTab}
-                          </span>
-                          <p className="text-sm font-semibold text-slate-200 truncate">
-                            {email.subject || '(No Subject)'}
+                            {getInitials(email.from)}
+                          </div>
+                        </div>
+
+                        <div className="flex-1 min-w-0 py-1">
+                          <div className="flex items-center justify-between gap-4 mb-1">
+                            <p className="text-sm font-bold text-white truncate group-hover:text-indigo-300 transition-colors">
+                              {email.from?.split('<')[0].replace(/['"]/g, '').trim()}
+                            </p>
+                            <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
+                              {formatDate(email.date)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                              activeTab === 'promotions' ? 'bg-indigo-500/20 text-indigo-300' : 
+                              activeTab === 'social' ? 'bg-blue-500/20 text-blue-300' : 
+                              activeTab === 'spam' ? 'bg-rose-500/20 text-rose-300' : 
+                              'bg-emerald-500/20 text-emerald-300'
+                            }`}>
+                              {activeTab}
+                            </span>
+                            <p className="text-sm font-semibold text-slate-200 truncate">
+                              {email.subject || '(No Subject)'}
+                            </p>
+                          </div>
+                          <p className="text-sm text-slate-400 line-clamp-1">
+                            {email.snippet}
                           </p>
                         </div>
-                        <p className="text-sm text-slate-400 line-clamp-1">
-                          {email.snippet}
-                        </p>
-                      </div>
-                    </motion.li>
-                  );
-                })}
-              </AnimatePresence>
-            </ul>
+                      </motion.li>
+                    );
+                  })}
+                </AnimatePresence>
+              </ul>
+              {pageTokens[activeTab] && (
+                <div className="p-8 flex justify-center border-t border-slate-700/30">
+                  <button
+                    onClick={() => fetchEmails(true)}
+                    disabled={loading}
+                    className="flex items-center gap-2 px-8 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl border border-slate-700 transition-all hover:scale-105 active:scale-95 disabled:opacity-50"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                    Load More Emails
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -672,20 +761,31 @@ const CleanupDashboard = () => {
                 Preview & Confirm
               </button>
               <div className="w-px h-6 bg-slate-700" />
-              <button 
-                onClick={() => setModalConfig({
-                  title: 'Delete Selected Emails',
-                  message: `Are you sure you want to move these ${selectedIds.size} emails to trash?`,
-                  confirmText: 'Move to Trash',
-                  isDanger: true,
-                  onConfirm: () => handleBulkDelete(false)
-                })}
-                disabled={actionLoading}
-                className="flex items-center gap-2 font-semibold hover:text-rose-400 transition-colors"
-              >
-                {actionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Trash2 className="w-5 h-5" />}
-                Delete
-              </button>
+              {activeTab === 'trash' ? (
+                <button 
+                  onClick={() => handleUndo(Array.from(selectedIds))}
+                  disabled={actionLoading}
+                  className="flex items-center gap-2 font-semibold hover:text-emerald-400 transition-colors"
+                >
+                  <RefreshCw className="w-5 h-5" />
+                  Restore to Inbox
+                </button>
+              ) : (
+                <button 
+                  onClick={() => setModalConfig({
+                    title: 'Delete Selected Emails',
+                    message: `Are you sure you want to move these ${selectedIds.size} emails to trash?`,
+                    confirmText: 'Move to Trash',
+                    isDanger: true,
+                    onConfirm: () => handleBulkDelete(false)
+                  })}
+                  disabled={actionLoading}
+                  className="flex items-center gap-2 font-semibold hover:text-rose-400 transition-colors"
+                >
+                  {actionLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Trash2 className="w-5 h-5" />}
+                  Delete
+                </button>
+              )}
             </div>
           </motion.div>
         )}

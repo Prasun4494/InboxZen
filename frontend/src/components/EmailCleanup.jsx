@@ -11,6 +11,7 @@ const EmailCleanup = () => {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState(null);
   const [showSpamConfirm, setShowSpamConfirm] = useState(false);
+  const [showScanConfirm, setShowScanConfirm] = useState(false);
 
   useEffect(() => {
     fetchEmails();
@@ -112,6 +113,34 @@ const EmailCleanup = () => {
     }
   };
 
+  const handleScanSpam = async (maxToScan = 50) => {
+    setActionLoading(true);
+    setShowScanConfirm(false);
+    setError(null);
+    const token = localStorage.getItem('gmail_token');
+    
+    try {
+      const response = await fetch(`${API_BASE}/scan-spam`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ maxToScan })
+      });
+      
+      if (!response.ok) throw new Error('Failed to scan for spam');
+      const data = await response.json();
+      
+      alert(data.message);
+      await fetchEmails();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -188,14 +217,24 @@ const EmailCleanup = () => {
             )}
 
             {activeTab === 'promotions' ? (
-              <button
-                onClick={handleCleanOldPromotions}
-                disabled={actionLoading}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 font-medium text-sm shadow-sm"
-              >
-                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                Clean Old Promotions (&gt; 30 days)
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowScanConfirm(true)}
+                  disabled={actionLoading}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50 font-medium text-sm shadow-sm"
+                >
+                  <ShieldAlert className="w-4 h-4" />
+                  AI Spam Scan
+                </button>
+                <button
+                  onClick={handleCleanOldPromotions}
+                  disabled={actionLoading}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 font-medium text-sm shadow-sm"
+                >
+                  {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  Clean Old Promotions (&gt; 30 days)
+                </button>
+              </div>
             ) : (
               <button
                 onClick={() => setShowSpamConfirm(true)}
@@ -300,6 +339,36 @@ const EmailCleanup = () => {
                 className="px-5 py-2.5 text-white bg-red-600 font-medium rounded-xl hover:bg-red-700 transition-colors shadow-sm shadow-red-200"
               >
                 Yes, Empty Spam
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Scan Confirmation Modal */}
+      {showScanConfirm && (
+        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 transform transition-all">
+            <div className="flex items-center gap-4 text-emerald-600 mb-5">
+              <div className="p-3 bg-emerald-100 rounded-full shadow-inner">
+                <ShieldAlert className="w-7 h-7" />
+              </div>
+              <h3 className="text-2xl font-bold text-gray-900">AI Spam Scanner</h3>
+            </div>
+            <p className="text-gray-600 mb-8 text-base leading-relaxed">
+              This will use AI to scan your last 50 inbox messages for potential spam and move them to the spam folder. This process may take a few moments.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowScanConfirm(false)}
+                className="px-5 py-2.5 text-gray-700 bg-gray-100 font-medium rounded-xl hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleScanSpam(50)}
+                className="px-5 py-2.5 text-white bg-emerald-600 font-medium rounded-xl hover:bg-emerald-700 transition-colors shadow-sm shadow-emerald-200"
+              >
+                Start Scan
               </button>
             </div>
           </div>

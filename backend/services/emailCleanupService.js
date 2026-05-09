@@ -1,4 +1,5 @@
 const { google } = require('googleapis');
+const { classifyEmail } = require('./ai');
 
 class EmailCleanupService {
   constructor(auth) {
@@ -34,6 +35,25 @@ class EmailCleanupService {
     return this.fetchEmails('in:spam', maxResults, pageToken);
   }
 
+  // Fetch trashed emails (Cleanup History)
+  async getTrash(maxResults = 50, pageToken = null) {
+    return this.fetchEmails('in:trash', maxResults, pageToken);
+  }
+
+  // Fetch general inbox emails
+  async getInbox(maxResults = 50, pageToken = null, unreadOnly = false) {
+    let query = 'in:inbox';
+    if (unreadOnly) {
+      query += ' is:unread';
+    }
+    return this.fetchEmails(query, maxResults, pageToken);
+  }
+
+  // Fetch all mail
+  async getAllMail(maxResults = 50, pageToken = null) {
+    return this.fetchEmails('', maxResults, pageToken);
+  }
+
   // Generic method to fetch and parse emails
   async fetchEmails(query, maxResults, pageToken) {
     try {
@@ -48,11 +68,15 @@ class EmailCleanupService {
       const messages = response.data.messages || [];
       const nextPageToken = response.data.nextPageToken;
 
-      const detailedMessages = await Promise.all(
+      const detailedMessagesResults = await Promise.allSettled(
         messages.map(async (msg) => {
           return this.getMessageDetails(msg.id);
         })
       );
+
+      const detailedMessages = detailedMessagesResults
+        .filter(result => result.status === 'fulfilled')
+        .map(result => result.value);
 
       console.log(`[EmailCleanupService] Subjects: ${detailedMessages.map(m => m.subject).join(', ')}`);
 
@@ -239,6 +263,65 @@ class EmailCleanupService {
       return { success: true, count: totalDeleted };
     } catch (error) {
       console.error('Error emptying spam folder:', error);
+      throw error;
+    }
+  }
+
+  async scanInboxForSpam(maxToScan = 50) {
+    try {
+      const response = await this.gmail.users.messages.list({
+        userId: 'me',
+        q: 'in:inbox -category:promotions -category:social', // Only scan main inbox
+        maxResults: maxToScan
+      });
+
+      const messages = response.data.messages || [];
+      const results = {
+        totalScanned: messages.length,
+        spamDetected: 0,
+        spamIds: [],
+        details: []
+      };
+
+      // Process in batches of 5 to avoid hitting rate limits and for better performance
+      const batchSize = 5;
+      for (let i = 0; i < messages.length; i += batchSize) {
+        const batch = messages.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (msg) => {
+          try {
+            const details = await this.getMessageDetails(msg.id);
+            const classification = await classifyEmail(details.subject, details.snippet);
+
+            if (classification.category === 'spam') {
+              results.spamDetected++;
+              results.spamIds.push(msg.id);
+              
+              // Move to spam folder
+              await this.gmail.users.messages.modify({
+                userId: 'me',
+                id: msg.id,
+                requestBody: {
+                  addLabelIds: ['SPAM'],
+                  removeLabelIds: ['INBOX']
+                }
+              });
+            }
+            
+            results.details.push({
+              id: msg.id,
+              subject: details.subject,
+              category: classification.category,
+              isSpam: classification.category === 'spam'
+            });
+          } catch (err) {
+            console.error(`Error processing message ${msg.id}:`, err.message);
+          }
+        }));
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Error scanning inbox for spam:', error);
       throw error;
     }
   }

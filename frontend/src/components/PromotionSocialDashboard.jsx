@@ -116,6 +116,32 @@ const PromotionSocialDashboard = () => {
       return;
     }
 
+    if (action === 'spam') {
+      try {
+        const token = localStorage.getItem('gmail_token');
+        await axios.post('http://localhost:3000/api/emails/mark-spam', {
+          emailId: id
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        
+        fetchEmails(activeTab);
+        fetchStats();
+        
+        setUndoToast({
+          isOpen: true,
+          message: 'Email marked as spam',
+          ids: [id]
+        });
+        
+        setIsModalOpen(false);
+      } catch (err) {
+        console.error('Failed to mark email as spam', err);
+        alert('Failed to mark email as spam');
+      }
+      return;
+    }
+
     // In a real app, this would call specific API endpoints
     alert(`Action: ${action} on ${id || 'selected items'}`);
     if (!id) setSelectedEmails(new Set());
